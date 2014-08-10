@@ -109,6 +109,11 @@ class Symfony {
 		$profiler = $this->kernel->getContainer()->get('profiler'); /* @var $profiler Profiler\Profiler */
 		$request = $profiler->get('request'); /* @var $router DataCollector\RequestDataCollector */
 		
+		if (is_null($request->getController())) {
+			/// work around the double-terminate weirdness in 'dev' environment
+			return ;
+		}
+		
 		$storage['request'] = array();
 		$this->storeRequest($request, $storage['request']);
 		
