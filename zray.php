@@ -126,21 +126,19 @@ class Symfony {
 		$bundles = $config['bundles'];
 		unset($config['bundles']);
 		
-		$storage['config'] = array();
-		$storage['config'][] = $config;
+		$storage['config'] = $config;
 		
 		$storage['bundles'] = array();
 		$this->storeBundles($bundles, $storage['bundles']);
 		
 		$forms = $profiler->get('form'); /* @var $router \Symfony\Component\Form\Extension\DataCollector\FormDataCollector */
-		$storage['forms'] = array();
 		$storage['forms'] = array_values(current($forms->getData()));
 		
 		$security = $profiler->get('security'); /* @var $router DataCollector\SecurityDataCollector */
 		$ref = new \ReflectionObject($security);
 		$prop = $ref->getProperty('data');
 		$prop->setAccessible(true);
-		$storage['security'] = array($prop->getValue($security));
+		$storage['security'] = $prop->getValue($security);
 	}
 	
 	/**
@@ -148,7 +146,7 @@ class Symfony {
 	 * @param array $storage
 	 */
 	private function storeRequest($request, &$storage) {
-		$storage[] = $request->getController() + array('locale' => $request->getLocale(), 'route' => array('name' => $request->getRoute(), 'params' => $request->getRouteParams()));
+		$storage = $request->getController() + array('locale' => $request->getLocale(), 'route' => array('name' => $request->getRoute(), 'params' => $request->getRouteParams()));
 	}
 	
 	/**
