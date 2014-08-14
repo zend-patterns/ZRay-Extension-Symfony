@@ -118,7 +118,6 @@ class Symfony {
 		$this->storeRequest($request, $storage['request']);
 		
 		$config = $profiler->get('config'); /* @var $router DataCollector\ConfigDataCollector */
-		
 		$ref = new \ReflectionObject($config);
 		$prop = $ref->getProperty('data');
 		$prop->setAccessible(true);
@@ -126,7 +125,9 @@ class Symfony {
 		$bundles = $config['bundles'];
 		unset($config['bundles']);
 		
-		$storage['config'] = $config;
+		foreach ($config as $key => $entry) {
+			$storage['config'][] = array('key' => $key, 'value' => $entry);
+		}
 		
 		$storage['bundles'] = array();
 		$this->storeBundles($bundles, $storage['bundles']);
