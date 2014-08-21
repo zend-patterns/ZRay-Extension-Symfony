@@ -139,7 +139,7 @@ class Symfony {
 		$ref = new \ReflectionObject($security);
 		$prop = $ref->getProperty('data');
 		$prop->setAccessible(true);
-		$storage['security'] = $prop->getValue($security);
+		$storage['security'] = array($prop->getValue($security));
 	}
 	
 	/**
@@ -147,7 +147,7 @@ class Symfony {
 	 * @param array $storage
 	 */
 	private function storeRequest($request, &$storage) {
-		$storage = $request->getController() + array('locale' => $request->getLocale(), 'route' => array('name' => $request->getRoute(), 'params' => $request->getRouteParams()));
+		$storage = array($request->getController() + array('locale' => $request->getLocale(), 'route' => array('name' => $request->getRoute(), 'params' => $request->getRouteParams())));
 	}
 	
 	/**
