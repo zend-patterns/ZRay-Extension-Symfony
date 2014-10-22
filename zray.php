@@ -2,186 +2,186 @@
 
 namespace ZRay;
 
-use Symfony\Component\HttpKernel\DataCollector;
-use Symfony\Component\DependencyInjection;
-use Symfony\Component\HttpKernel\Profiler;
-use Symfony\Component\Form\Extension\DataCollector\Proxy\ResolvedTypeFactoryDataCollectorProxy;
-use Symfony\Component\Form\FormRegistry;
-use Symfony\Component\Form\Extension\DataCollector\FormDataExtractor;
-
 class Symfony {
 	/**
 	 * @var \Symfony\Component\HttpKernel\Kernel
 	 */
 	private $kernel;
+	private $tracedAlready = false;
+	private $zre = null;
 
-	public function bootExit($context, &$storage) {
-		/// kick off the profiler
-		$this->kernel = $context['this']; /* @var $kernel \Symfony\Component\HttpKernel\Kernel */
-
-		$container = $this->kernel->getContainer();
-		
-		/// override event dispatcher with debug.event_dispatcher
-		$events = new \Symfony\Component\HttpKernel\Debug\TraceableEventDispatcher(
-				$container->get('event_dispatcher'),
-				new \Symfony\Component\Stopwatch\Stopwatch(),
-				null); /// add logger interface!
-		$container->set('event_dispatcher', $events);
-		
-		$profiler = new Profiler\Profiler(new Profiler\FileProfilerStorage('file:/var/www/symf/app/cache/dev/profiler', '', '', 86400));
-		$profiler->enable();
-
-		$container->set('profiler', $profiler);
-		/// end setup
-		
-		$request = new DataCollector\RequestDataCollector();
-		$profiler->add($request);
-		$container->set('data_collector.request', $request);
-		/// collect controller information
-		$events->addListenerService('kernel.controller', array(0 => 'data_collector.request', 1 => 'onKernelController'), 0);
-
-		$config = new DataCollector\ConfigDataCollector();
-		if ($container->has('kernel')) {
-			$config->setKernel($this->kernel);
-		}
-		$profiler->add($config);
-		
-		$formCollector = new \Symfony\Component\Form\Extension\DataCollector\FormDataCollector(new FormDataExtractor());
-		$formCollectorProxy = new ResolvedTypeFactoryDataCollectorProxy($container->get('form.resolved_type_factory'), $formCollector);
-		$container->set('form.resolved_type_factory', $formCollectorProxy);
-		$profiler->add($formCollector);
-		
-		/// form collector has to be injected into the form registry as an extension
-		$formRegistry = $container->get('form.registry'); /* @var $formRegistry FormRegistry */
-		
-		$container->set('form.type_extension.form.data_collector', new \Symfony\Component\Form\Extension\DataCollector\Type\DataCollectorTypeExtension($formCollector));
-		
-		$extensions = $formRegistry->getExtensions();
-		$dependencyInjection = $extensions[0]; /* @var $oldDependencyInjection \Symfony\Component\Form\Extension\DependencyInjection\DependencyInjectionExtension */
-		$reflection = new \ReflectionProperty('Symfony\Component\Form\Extension\DependencyInjection\DependencyInjectionExtension', 'typeExtensionServiceIds');
-		$reflection->setAccessible(true);
-		$extensionServices = $reflection->getValue($dependencyInjection);
-		
-		if ( ! isset($extensionServices['form'])) {
-			$extensionServices['form'] = array();
-		}
-		
-		if ( ! in_array('form.type_extension.form.data_collector', $extensionServices['form'])) {
-			array_push($extensionServices['form'], 'form.type_extension.form.data_collector');
-			$reflection->setValue($dependencyInjection, $extensionServices);
-		}
-		//// end form collector integration as form registry extension
-		
-		$profiler->add(new \Symfony\Bundle\SecurityBundle\DataCollector\SecurityDataCollector($container->get('security.context', DependencyInjection\ContainerInterface::EXCEPTION_ON_INVALID_REFERENCE)));
-		
-		$profiler->add(new DataCollector\EventDataCollector($events));
-
-		
-		/// register request information listener
-		$listener = new \Symfony\Component\HttpKernel\EventListener\ProfilerListener($profiler, NULL, false, false, $container->get('request_stack'));
-		$container->set('profiler_listener', $listener);
-
-		$events->addSubscriberService('profiler_listener', $listener);
-		
+	public function setZRE($zre) {
+		$this->zre = $zre;
 	}
-	
-	/**
-	 * Catch collector data before it gets wiped out
-	 * 
-	 * @param array $context
-	 */
-	public function eventDataCollector_lateCollectExit($context, &$storage) {
 
-		$profiler = $this->kernel->getContainer()->get('profiler'); /* @var $profiler Profiler\Profiler */
-		$events = $profiler->get('events'); /* @var $router DataCollector\EventDataCollector */
-		
-		$ref = new \ReflectionObject($events);
-		$prop = $ref->getProperty('data');
-		$prop->setAccessible(true);
-		$listeners = $prop->getValue($context['this']);
-		
-		$storage['events'] = array();
-		$this->storeEventListeners($listeners['called_listeners'], $storage['events'], true);
-		$this->storeEventListeners($listeners['not_called_listeners'], $storage['events'], false);
+
+	public function eventDispatchExit($context, &$storage) {
+		$event = $context['functionArgs'][1];
+		$storage['events'][] = array(	
+						'name' => $event->getName(),
+						'type' => get_class($event),
+						'dispatcher' => get_class($event->getDispatcher()),
+						'propagation stopped' => $event->isPropagationStopped(),
+						);
 	}
-	
+
+	public function registerBundlesExit($context, &$storage) {
+		$bundles = $context['returnValue'];
+
+		foreach ($bundles as $bundle) {
+			$storage['bundles'][] = array(
+							'name' => $bundle->getName(),
+							'namespace' => $bundle->getNamespace(),
+							'container' => get_class($bundle->getContainerExtension()),
+							'path' => $bundle->getPath(),
+						);
+		}
+	}
+
+	public function handleRequestExit($context, &$storage) {
+		$request = $context['functionArgs'][0];
+		
+		$ctrl = $request->get('_controller');
+		if (empty($ctrl)) {
+			return;
+		}
+		$ctrl = explode(':', $ctrl);
+		$controller = $ctrl[0];
+		if (!empty($ctrl[2])) {
+			$action = $ctrl[2];
+		} else {
+			$action = $ctrl[1];
+		}
+		try {
+			$refclass = new \ReflectionClass($controller);
+			$filename = $refclass->getFileName();
+			$lineno = $refclass->getStartLine();
+		} catch (Exception $e) {
+			$filename = $lineno = '';
+		}
+		$storage['request'][] = array(
+						'Controller' => $controller,
+						'Action' => $action,
+						'Filename' => $filename,
+						'Line Number' => $lineno,
+						'Route' => array(	
+							'Name' => $request->get('_route'),
+							'Params' => $request->get('_routeparams'),
+							),
+						'Session' => ($request->getSession() ? 'yes' : 'no'),
+						'Locale' => $request->getLocale(),
+					);
+	}
+
 	public function terminateExit($context, &$storage){
-		$profiler = $this->kernel->getContainer()->get('profiler'); /* @var $profiler Profiler\Profiler */
-		$request = $profiler->get('request'); /* @var $router DataCollector\RequestDataCollector */
-		
-		if (is_null($request->getController())) {
-			/// work around the double-terminate weirdness in 'dev' environment
-			return ;
+		$thisCtx = $context['this'];
+
+		$listeners = $thisCtx->getContainer()->get('event_dispatcher')->getListeners();
+
+		foreach ($listeners as $listenerName => $listener) {
+			$listenerEntry = array();
+			$handlerEntries = array();
+			foreach ($listener as $callable) {
+				switch(gettype($callable)) {
+					case 'array':
+						if (gettype($callable[0])=='string') {
+							$strCallable = $callable[0].'::'.$callable[1];
+						} else {
+							$strCallable = get_class($callable[0]).'::'.$callable[1];
+						}
+						break;
+					case 'string':
+						$strCallable = $callable;
+						break;
+					case 'object':
+						$strCallable = get_class($callable);
+						break;
+					default:
+						$strCallable = 'unknown';
+						break;
+				}
+				$listenerEntries[$listenerName][] = $strCallable;
+			}
 		}
-		
-		$storage['request'] = array();
-		$this->storeRequest($request, $storage['request']);
-		
-		$config = $profiler->get('config'); /* @var $router DataCollector\ConfigDataCollector */
-		$ref = new \ReflectionObject($config);
-		$prop = $ref->getProperty('data');
-		$prop->setAccessible(true);
-		$config = $prop->getValue($config);
-		$bundles = $config['bundles'];
-		unset($config['bundles']);
-		
-		foreach ($config as $key => $entry) {
-			$storage['config'][] = array('key' => $key, 'value' => $entry);
+		$storage['listeners'][] = $listenerEntries;
+		$securityCtx = $thisCtx->getContainer()->get('security.context');
+		$securityToken = ($securityCtx ? $securityCtx->getToken() : null);
+
+		$isAuthenticated = false;
+		$authType = '';
+		$attributes = array();
+		$userId = '';
+		$username = '';
+		$salt = '';
+		$password = '';
+		$email = '';
+		$isActive = '';
+		$roles = array();
+		$tokenClass = 'No security token available';
+	
+		if ($securityToken) {
+			$attributes = $securityToken->getAttributes();
+			$tokenClass = get_class($securityToken);
+			
+			$isAuthenticated = $securityToken->isAuthenticated();
+			if ($isAuthenticated) {
+				if ($securityCtx->isGranted('IS_AUTHENTICATED_FULLY')) {
+					$authType = 'IS_AUTHENTICATED_FULLY';
+				} else if ($securityCtx->isGranted('IS_AUTHENTICATED_REMEMBERED')) {
+					$authType = 'IS_AUTHENTICATED_REMEMBERED';
+				} else if ($securityCtx->isGranted('IS_AUTHENTICATED_ANONYMOUSLY')) {
+					$authType = 'IS_AUTHENTICATED_ANONYMOUSLY';
+				} else {
+					$authType = 'Unknown';
+				}
+			}
+			$user = $securityToken->getUser();
+			if ($user) {
+				if ($user !== 'anon.') {
+					$userId = $user->getId();
+					$username = $user->getUsername();
+					$salt = $user->getSalt();
+					$password = $user->getPassword();
+					$email = $user->getEmail();
+					$isActive = $user->getIsActive();
+					$roles = $user->getRoles();
+				} else {
+					$username = 'anonymous';
+				}
+			}
 		}
-		
-		$storage['bundles'] = array();
-		$this->storeBundles($bundles, $storage['bundles']);
-		
-		$forms = $profiler->get('form'); /* @var $router \Symfony\Component\Form\Extension\DataCollector\FormDataCollector */
-		$storage['forms'] = array_values(current($forms->getData()));
-		
-		$security = $profiler->get('security'); /* @var $router DataCollector\SecurityDataCollector */
-		$ref = new \ReflectionObject($security);
-		$prop = $ref->getProperty('data');
-		$prop->setAccessible(true);
-		$storage['security'] = array($prop->getValue($security));
+
+		$storage['security'][] = array(
+						'isAuthenticated' => $isAuthenticated,
+						'username' => $username,
+						'user id' => $userId,
+						'roles' => $roles,
+						'authType' => $authType,
+						'isActive' => $isActive,
+						'email' => $email,
+						'attributes' => $attributes,
+						'password' => $password,
+						'salt' => $salt,
+						'token type' => $tokenClass,
+						);
+
 	}
 	
-	/**
-	 * @param DataCollector\RequestDataCollector $request
-	 * @param array $storage
-	 */
-	private function storeRequest($request, &$storage) {
-		$storage = array($request->getController() + array('locale' => $request->getLocale(), 'route' => array('name' => $request->getRoute(), 'params' => $request->getRouteParams())));
-	}
-	
-	/**
-	 * @param array $bundles
-	 * @param array $storage
-	 */
-	private function storeBundles($bundles, &$storage) {
-		foreach ($bundles as $name => $path) {
-			$storage[] = array('name' => $name, 'path' => $path);
-		}
-	}
-	
-	/**
-	 * @param array $listeners
-	 * @param array $storage
-	 * @param boolean $called
-	 */
-	private function storeEventListeners($listeners, &$storage, $called) {
-		foreach($listeners as $id => $listener) {
-			$storage[] = array(
-					'called' => $called,
-					'id' => $id
-			) + $listener;
-		}
-	}
 }
 
-$bootToTerminate = new Symfony();
-
-// Allocate ZRayExtension for namespace "MyExtension"
 $zre = new \ZRayExtension("symfony");
-// Trace all functions that starts with 'm'
-$zre->traceFunction("Symfony\Component\HttpKernel\Kernel::boot", function(){}, array($bootToTerminate, 'bootExit'));
 
-$zre->traceFunction("Symfony\Component\HttpKernel\Kernel::terminate", function(){}, array($bootToTerminate, 'terminateExit'));
+$zraySymfony = new Symfony();
+$zraySymfony->setZRE($zre);
 
-$zre->traceFunction("Symfony\Component\HttpKernel\DataCollector\EventDataCollector::lateCollect", function(){}, array($bootToTerminate, 'eventDataCollector_lateCollectExit'));
+$zre->setMetadata(array(
+	'logo' => __DIR__ . DIRECTORY_SEPARATOR . 'logo.png',
+));
+
+$zre->setEnabledAfter('AppKernel::registerBundles');
+
+$zre->traceFunction("Symfony\Component\HttpKernel\Kernel::terminate", function(){}, array($zraySymfony, 'terminateExit'));
+$zre->traceFunction("Symfony\Component\HttpKernel\HttpKernel::handle", function(){}, array($zraySymfony, 'handleRequestExit'));
+$zre->traceFunction("Symfony\Component\EventDispatcher\EventDispatcher::dispatch", function(){}, array($zraySymfony, 'eventDispatchExit'));
+$zre->traceFunction("AppKernel::registerBundles", function(){}, array($zraySymfony, 'registerBundlesExit'));
+
